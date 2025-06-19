@@ -221,17 +221,6 @@ func (a *AudioAnalyzer) detectExcitementMarkers(samples []float64, sampleRate fl
 					score := peakVolume / baseline
 					endTime := currentTime
 
-					// If score > 1.0, extend to include next minute
-					if score > 1.0 {
-						extendedEnd := startTime + 60.0 // Next minute
-						if extendedEnd <= totalDuration {
-							endTime = extendedEnd
-						} else {
-							endTime = totalDuration
-						}
-						log.Printf("Extending marker to %.2fs (score: %.1fx)", endTime, score)
-					}
-
 					markers = append(markers, ExcitementMarker{
 						StartTime: startTime,
 						EndTime:   endTime,
@@ -255,14 +244,6 @@ func (a *AudioAnalyzer) detectExcitementMarkers(samples []float64, sampleRate fl
 			score := peakVolume / baseline
 			endTime := totalDuration
 
-			// If score > 1.0, extend to include next 10 seconds (but can't go beyond total duration)
-			if score > 1.0 {
-				extendedEnd := startTime + 10.0
-				if extendedEnd <= totalDuration {
-					endTime = extendedEnd
-				}
-			}
-
 			markers = append(markers, ExcitementMarker{
 				StartTime: startTime,
 				EndTime:   endTime,
@@ -272,7 +253,57 @@ func (a *AudioAnalyzer) detectExcitementMarkers(samples []float64, sampleRate fl
 		}
 	}
 
-	return markers
+	// Merge overlapping markers
+	return mergeOverlappingMarkers(markers)
+}
+
+func mergeOverlappingMarkers(markers []ExcitementMarker) []ExcitementMarker {
+	if len(markers) <= 1 {
+		return markers
+	}
+
+	// Sort markers by start time
+	for i := 0; i < len(markers); i++ {
+		for j := i + 1; j < len(markers); j++ {
+			if markers[i].StartTime > markers[j].StartTime {
+				markers[i], markers[j] = markers[j], markers[i]
+			}
+		}
+	}
+
+	var merged []ExcitementMarker
+	current := markers[0]
+
+	for i := 1; i < len(markers); i++ {
+		next := markers[i]
+
+		// More conservative merging: only merge if segments actually overlap significantly
+		// and the gap between them is small
+		overlap := current.EndTime - next.StartTime
+		if overlap > 10.0 || (next.StartTime <= current.EndTime+5.0 && overlap > 0) {
+			// Merge segments
+			if next.EndTime > current.EndTime {
+				current.EndTime = next.EndTime
+			}
+			// Keep the higher score
+			if next.Score > current.Score {
+				current.Score = next.Score
+				current.Label = next.Label
+			}
+			log.Printf("Merged overlapping segments: %.2fs-%.2fs with %.2fs-%.2fs (overlap: %.2fs)",
+				current.StartTime, current.EndTime, next.StartTime, next.EndTime, overlap)
+		} else {
+			// No significant overlap, add current to merged list and move to next
+			merged = append(merged, current)
+			current = next
+		}
+	}
+
+	// Add the last segment
+	merged = append(merged, current)
+
+	log.Printf("Reduced %d markers to %d merged markers", len(markers), len(merged))
+	return merged
 }
 
 func calculateRMS(samples []float64) float64 {
@@ -315,6 +346,7 @@ func exportToLosslessCut(markers []ExcitementMarker, filename string, mediaFileN
 	}
 
 	for i, marker := range markers {
+
 		project.CutSegments[i] = CutSegment{
 			Start: marker.StartTime,
 			End:   marker.EndTime,
