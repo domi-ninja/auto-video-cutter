@@ -82,7 +82,7 @@ func main() {
 
 	// Analyze audio for excitement markers
 	analyzer := &AudioAnalyzer{
-		WindowSize:     *windowMs * 44100 / 1000, // Convert ms to samples (assuming 44.1kHz)
+		WindowSize:     *windowMs * 44100 / 1000, // Convert ms to samples (44.1kHz)
 		ThresholdRatio: *threshold,
 		MinDuration:    *minDuration,
 		SampleRate:     44100,
@@ -108,13 +108,15 @@ func extractAudio(videoFile string) (string, error) {
 	tempDir := os.TempDir()
 	audioFile := filepath.Join(tempDir, "temp_audio.wav")
 
-	// Use FFmpeg to extract audio as 16-bit 44.1kHz WAV
+	// Use FFmpeg to extract audio with optimizations for speed
 	cmd := exec.Command("ffmpeg",
 		"-i", videoFile,
 		"-vn",                  // No video
 		"-acodec", "pcm_s16le", // 16-bit PCM
-		"-ar", "44100", // 44.1kHz sample rate
+		"-ar", "44100", // Use consistent 44.1kHz sample rate
 		"-ac", "1", // Mono
+		"-threads", "0", // Use all available CPU cores
+		"-preset", "ultrafast", // Fastest encoding preset
 		"-y", // Overwrite output file
 		audioFile,
 	)
@@ -158,7 +160,7 @@ func (a *AudioAnalyzer) AnalyzeAudio(audioFile string) ([]ExcitementMarker, erro
 
 	sampleRate := float64(decoder.SampleRate)
 	a.SampleRate = int(sampleRate)
-	a.WindowSize = int(float64(a.WindowSize) * sampleRate / 44100) // Adjust for actual sample rate
+	// No need to adjust WindowSize since we're using consistent 44.1kHz
 
 	log.Printf("Audio info: %d samples, %.1f Hz, %.2f seconds",
 		len(samples), sampleRate, float64(len(samples))/sampleRate)
@@ -167,175 +169,131 @@ func (a *AudioAnalyzer) AnalyzeAudio(audioFile string) ([]ExcitementMarker, erro
 }
 
 func (a *AudioAnalyzer) detectExcitementMarkers(samples []float64, sampleRate float64) []ExcitementMarker {
-	windowSize := a.WindowSize
-	if windowSize > len(samples) {
-		windowSize = len(samples)
+	if len(samples) == 0 {
+		return []ExcitementMarker{}
 	}
 
-	var markers []ExcitementMarker
-	var volumes []float64
-	totalDuration := float64(len(samples)) / sampleRate
-
-	// Calculate RMS volume for each window
-	for i := 0; i < len(samples)-windowSize; i += windowSize / 2 { // 50% overlap
-		rms := calculateRMS(samples[i : i+windowSize])
-		volumes = append(volumes, rms)
+	// Calculate RMS (Root Mean Square) values for sliding windows
+	windowSamples := a.WindowSize
+	if windowSamples <= 0 {
+		windowSamples = int(sampleRate) // Default to 1 second
 	}
 
-	if len(volumes) < 10 {
-		log.Printf("Warning: Not enough audio data for analysis")
-		return markers
+	numWindows := len(samples) / windowSamples
+	if numWindows == 0 {
+		return []ExcitementMarker{}
 	}
 
-	// Calculate baseline (median of all volumes)
-	baseline := calculateMedian(volumes)
+	rmsValues := make([]float64, numWindows)
+
+	// Calculate RMS for each window
+	for i := 0; i < numWindows; i++ {
+		start := i * windowSamples
+		end := start + windowSamples
+		if end > len(samples) {
+			end = len(samples)
+		}
+
+		sum := 0.0
+		for j := start; j < end; j++ {
+			sum += samples[j] * samples[j]
+		}
+		rmsValues[i] = math.Sqrt(sum / float64(end-start))
+	}
+
+	// Calculate baseline (average RMS)
+	baseline := 0.0
+	for _, rms := range rmsValues {
+		baseline += rms
+	}
+	baseline /= float64(len(rmsValues))
+
+	log.Printf("Baseline RMS: %.6f", baseline)
+
 	threshold := baseline * a.ThresholdRatio
-
-	log.Printf("Baseline volume: %.6f, Threshold: %.6f", baseline, threshold)
+	log.Printf("Threshold: %.6f (%.1fx baseline)", threshold, a.ThresholdRatio)
 
 	// Find excitement periods
-	inExcitement := false
-	startTime := 0.0
-	peakVolume := 0.0
-	windowDuration := float64(windowSize/2) / sampleRate // Time per window step
+	var markers []ExcitementMarker
+	var excitementStart int
+	var inExcitement bool
 
-	for i, volume := range volumes {
-		currentTime := float64(i) * windowDuration
-
-		if !inExcitement && volume > threshold {
-			// Start of excitement
-			inExcitement = true
-			startTime = currentTime
-			peakVolume = volume
-			log.Printf("Excitement start at %.2fs (volume: %.6f)", startTime, volume)
-		} else if inExcitement {
-			// Track peak volume during excitement
-			if volume > peakVolume {
-				peakVolume = volume
+	for i, rms := range rmsValues {
+		if rms > threshold {
+			if !inExcitement {
+				// Start of excitement period
+				excitementStart = i
+				inExcitement = true
+				log.Printf("Excitement start at window %d (%.2fs), RMS: %.6f", i, float64(i*windowSamples)/sampleRate, rms)
 			}
-
-			if volume <= threshold {
-				// End of excitement
-				duration := currentTime - startTime
+		} else {
+			if inExcitement {
+				// End of excitement period
+				windowDiff := i - excitementStart
+				duration := float64(windowDiff) * float64(windowSamples) / sampleRate
+				log.Printf("Excitement end at window %d (%.2fs), excitementStart: %d, i: %d, windowDiff: %d, windowSamples: %d, sampleRate: %.0f, duration: %.2fs, min required: %.2fs", i, float64(i*windowSamples)/sampleRate, excitementStart, i, windowDiff, windowSamples, sampleRate, duration, a.MinDuration)
 				if duration >= a.MinDuration {
-					score := peakVolume / baseline
-					endTime := currentTime
+					startTime := float64(excitementStart*windowSamples) / sampleRate
+					endTime := float64(i*windowSamples) / sampleRate
 
-					markers = append(markers, ExcitementMarker{
+					// Calculate average multiplier for this segment
+					avgMultiplier := 0.0
+					count := 0
+					for j := excitementStart; j < i; j++ {
+						avgMultiplier += rmsValues[j] / baseline
+						count++
+					}
+					if count > 0 {
+						avgMultiplier /= float64(count)
+					}
+
+					marker := ExcitementMarker{
 						StartTime: startTime,
 						EndTime:   endTime,
-						Label:     fmt.Sprintf("Excitement (%.1fx)", score),
-						Score:     score,
-					})
-					log.Printf("Excitement end at %.2fs (duration: %.2fs, score: %.1fx)",
-						endTime, endTime-startTime, score)
+						Label:     fmt.Sprintf("Excitement (%.1fx)", avgMultiplier),
+						Score:     avgMultiplier,
+					}
+					markers = append(markers, marker)
+					log.Printf("Added marker: %.2fs-%.2fs (%.1fx)", startTime, endTime, avgMultiplier)
 				} else {
-					log.Printf("Excitement too short: %.2fs", duration)
+					log.Printf("Skipping short excitement period: %.2fs < %.2fs", duration, a.MinDuration)
 				}
 				inExcitement = false
 			}
 		}
 	}
 
-	// Handle case where excitement continues to end of audio
+	// Handle case where excitement period extends to end of audio
 	if inExcitement {
-		duration := totalDuration - startTime
+		windowDiff := len(rmsValues) - excitementStart
+		duration := float64(windowDiff) * float64(windowSamples) / sampleRate
 		if duration >= a.MinDuration {
-			score := peakVolume / baseline
-			endTime := totalDuration
+			startTime := float64(excitementStart*windowSamples) / sampleRate
+			endTime := float64(len(samples)) / sampleRate
 
-			markers = append(markers, ExcitementMarker{
+			// Calculate average multiplier for this segment
+			avgMultiplier := 0.0
+			count := 0
+			for j := excitementStart; j < len(rmsValues); j++ {
+				avgMultiplier += rmsValues[j] / baseline
+				count++
+			}
+			if count > 0 {
+				avgMultiplier /= float64(count)
+			}
+
+			marker := ExcitementMarker{
 				StartTime: startTime,
 				EndTime:   endTime,
-				Label:     fmt.Sprintf("Excitement (%.1fx)", score),
-				Score:     score,
-			})
+				Label:     fmt.Sprintf("Excitement (%.1fx)", avgMultiplier),
+				Score:     avgMultiplier,
+			}
+			markers = append(markers, marker)
+			log.Printf("Added final marker: %.2fs-%.2fs (%.1fx)", startTime, endTime, avgMultiplier)
 		}
 	}
 
-	// Merge overlapping markers
-	return mergeOverlappingMarkers(markers)
-}
-
-func mergeOverlappingMarkers(markers []ExcitementMarker) []ExcitementMarker {
-	if len(markers) <= 1 {
-		return markers
-	}
-
-	// Sort markers by start time
-	for i := 0; i < len(markers); i++ {
-		for j := i + 1; j < len(markers); j++ {
-			if markers[i].StartTime > markers[j].StartTime {
-				markers[i], markers[j] = markers[j], markers[i]
-			}
-		}
-	}
-
-	var merged []ExcitementMarker
-	current := markers[0]
-
-	for i := 1; i < len(markers); i++ {
-		next := markers[i]
-
-		// More conservative merging: only merge if segments actually overlap significantly
-		// and the gap between them is small
-		overlap := current.EndTime - next.StartTime
-		if overlap > 10.0 || (next.StartTime <= current.EndTime+5.0 && overlap > 0) {
-			// Merge segments
-			if next.EndTime > current.EndTime {
-				current.EndTime = next.EndTime
-			}
-			// Keep the higher score
-			if next.Score > current.Score {
-				current.Score = next.Score
-				current.Label = next.Label
-			}
-			log.Printf("Merged overlapping segments: %.2fs-%.2fs with %.2fs-%.2fs (overlap: %.2fs)",
-				current.StartTime, current.EndTime, next.StartTime, next.EndTime, overlap)
-		} else {
-			// No significant overlap, add current to merged list and move to next
-			merged = append(merged, current)
-			current = next
-		}
-	}
-
-	// Add the last segment
-	merged = append(merged, current)
-
-	log.Printf("Reduced %d markers to %d merged markers", len(markers), len(merged))
-	return merged
-}
-
-func calculateRMS(samples []float64) float64 {
-	var sum float64
-	for _, sample := range samples {
-		sum += sample * sample
-	}
-	return math.Sqrt(sum / float64(len(samples)))
-}
-
-func calculateMedian(values []float64) float64 {
-	if len(values) == 0 {
-		return 0
-	}
-
-	// Make a copy and sort it
-	sorted := make([]float64, len(values))
-	copy(sorted, values)
-
-	// Simple bubble sort for small arrays
-	for i := 0; i < len(sorted); i++ {
-		for j := 0; j < len(sorted)-1; j++ {
-			if sorted[j] > sorted[j+1] {
-				sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
-			}
-		}
-	}
-
-	if len(sorted)%2 == 0 {
-		return (sorted[len(sorted)/2-1] + sorted[len(sorted)/2]) / 2
-	}
-	return sorted[len(sorted)/2]
+	return markers
 }
 
 func exportToLosslessCut(markers []ExcitementMarker, filename string, mediaFileName string) error {
@@ -346,10 +304,12 @@ func exportToLosslessCut(markers []ExcitementMarker, filename string, mediaFileN
 	}
 
 	for i, marker := range markers {
+		start := marker.StartTime
+		end := marker.EndTime
 
 		project.CutSegments[i] = CutSegment{
-			Start: marker.StartTime,
-			End:   marker.EndTime,
+			Start: start,
+			End:   end,
 			Name:  marker.Label,
 		}
 	}
