@@ -38,7 +38,7 @@ This will:
 
 **Options:**
 - `-input` - Input video file path (required)
-- `-output` - Output LosslessCut project file path (default: input_name_markers.proj.llc)
+- `-output` - Output LosslessCut project file path (default: input_name.proj.llc)
 - `-threshold` - Volume spike threshold multiplier (default: 2.0)
 - `-min-duration` - Minimum excitement duration in seconds (default: 1.0)
 - `-window` - Analysis window size in milliseconds (default: 1000)
