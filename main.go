@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/csv"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/go-audio/wav"
@@ -23,6 +22,18 @@ type ExcitementMarker struct {
 	Score     float64
 }
 
+type CutSegment struct {
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Name  string  `json:"name"`
+}
+
+type LosslessCutProject struct {
+	Version       int          `json:"version"`
+	MediaFileName string       `json:"mediaFileName"`
+	CutSegments   []CutSegment `json:"cutSegments"`
+}
+
 type AudioAnalyzer struct {
 	WindowSize     int     // Window size in samples
 	ThresholdRatio float64 // Multiplier for baseline volume
@@ -33,7 +44,7 @@ type AudioAnalyzer struct {
 func main() {
 	var (
 		inputFile   = flag.String("input", "", "Input video file path")
-		outputFile  = flag.String("output", "", "Output CSV file path (default: input_name_markers.csv)")
+		outputFile  = flag.String("output", "", "Output LosslessCut project file path (default: input_name_markers.proj.llc)")
 		threshold   = flag.Float64("threshold", 2.0, "Volume spike threshold multiplier")
 		minDuration = flag.Float64("min-duration", 1.0, "Minimum excitement duration in seconds")
 		windowMs    = flag.Int("window", 1000, "Analysis window size in milliseconds")
@@ -50,7 +61,7 @@ func main() {
 	if *outputFile == "" {
 		ext := filepath.Ext(*inputFile)
 		base := strings.TrimSuffix(filepath.Base(*inputFile), ext)
-		*outputFile = base + "_markers.csv"
+		*outputFile = base + "_markers.proj.llc"
 	}
 
 	if *verbose {
@@ -82,15 +93,15 @@ func main() {
 		log.Fatalf("Failed to analyze audio: %v", err)
 	}
 
-	// Export markers to CSV
-	err = exportToCSV(markers, *outputFile)
+	// Export markers to LosslessCut JSON format
+	err = exportToLosslessCut(markers, *outputFile, filepath.Base(*inputFile))
 	if err != nil {
 		log.Fatalf("Failed to export markers: %v", err)
 	}
 
 	fmt.Printf("Found %d excitement markers\n", len(markers))
 	fmt.Printf("Markers exported to: %s\n", *outputFile)
-	fmt.Println("Import this CSV file into LosslessCut: File → Import project → CSV segments")
+	fmt.Println("Import this file into LosslessCut: File → Open → Select the .proj.llc file")
 }
 
 func extractAudio(videoFile string) (string, error) {
@@ -163,6 +174,7 @@ func (a *AudioAnalyzer) detectExcitementMarkers(samples []float64, sampleRate fl
 
 	var markers []ExcitementMarker
 	var volumes []float64
+	totalDuration := float64(len(samples)) / sampleRate
 
 	// Calculate RMS volume for each window
 	for i := 0; i < len(samples)-windowSize; i += windowSize / 2 { // 50% overlap
@@ -184,6 +196,7 @@ func (a *AudioAnalyzer) detectExcitementMarkers(samples []float64, sampleRate fl
 	// Find excitement periods
 	inExcitement := false
 	startTime := 0.0
+	peakVolume := 0.0
 	windowDuration := float64(windowSize/2) / sampleRate // Time per window step
 
 	for i, volume := range volumes {
@@ -193,37 +206,68 @@ func (a *AudioAnalyzer) detectExcitementMarkers(samples []float64, sampleRate fl
 			// Start of excitement
 			inExcitement = true
 			startTime = currentTime
+			peakVolume = volume
 			log.Printf("Excitement start at %.2fs (volume: %.6f)", startTime, volume)
-		} else if inExcitement && volume <= threshold {
-			// End of excitement
-			duration := currentTime - startTime
-			if duration >= a.MinDuration {
-				score := volume / baseline
-				markers = append(markers, ExcitementMarker{
-					StartTime: startTime,
-					EndTime:   currentTime,
-					Label:     fmt.Sprintf("Excitement (%.1fx)", score),
-					Score:     score,
-				})
-				log.Printf("Excitement end at %.2fs (duration: %.2fs, score: %.1fx)",
-					currentTime, duration, score)
-			} else {
-				log.Printf("Excitement too short: %.2fs", duration)
+		} else if inExcitement {
+			// Track peak volume during excitement
+			if volume > peakVolume {
+				peakVolume = volume
 			}
-			inExcitement = false
+
+			if volume <= threshold {
+				// End of excitement
+				duration := currentTime - startTime
+				if duration >= a.MinDuration {
+					score := peakVolume / baseline
+					endTime := currentTime
+
+					// If score > 1.0, extend to include next minute
+					if score > 1.0 {
+						extendedEnd := startTime + 60.0 // Next minute
+						if extendedEnd <= totalDuration {
+							endTime = extendedEnd
+						} else {
+							endTime = totalDuration
+						}
+						log.Printf("Extending marker to %.2fs (score: %.1fx)", endTime, score)
+					}
+
+					markers = append(markers, ExcitementMarker{
+						StartTime: startTime,
+						EndTime:   endTime,
+						Label:     fmt.Sprintf("Excitement (%.1fx)", score),
+						Score:     score,
+					})
+					log.Printf("Excitement end at %.2fs (duration: %.2fs, score: %.1fx)",
+						endTime, endTime-startTime, score)
+				} else {
+					log.Printf("Excitement too short: %.2fs", duration)
+				}
+				inExcitement = false
+			}
 		}
 	}
 
 	// Handle case where excitement continues to end of audio
 	if inExcitement {
-		endTime := float64(len(samples)) / sampleRate
-		duration := endTime - startTime
+		duration := totalDuration - startTime
 		if duration >= a.MinDuration {
+			score := peakVolume / baseline
+			endTime := totalDuration
+
+			// If score > 1.0, extend to include next 10 seconds (but can't go beyond total duration)
+			if score > 1.0 {
+				extendedEnd := startTime + 10.0
+				if extendedEnd <= totalDuration {
+					endTime = extendedEnd
+				}
+			}
+
 			markers = append(markers, ExcitementMarker{
 				StartTime: startTime,
 				EndTime:   endTime,
-				Label:     "Excitement (end)",
-				Score:     volumes[len(volumes)-1] / baseline,
+				Label:     fmt.Sprintf("Excitement (%.1fx)", score),
+				Score:     score,
 			})
 		}
 	}
@@ -263,38 +307,33 @@ func calculateMedian(values []float64) float64 {
 	return sorted[len(sorted)/2]
 }
 
-func exportToCSV(markers []ExcitementMarker, filename string) error {
+func exportToLosslessCut(markers []ExcitementMarker, filename string, mediaFileName string) error {
+	project := LosslessCutProject{
+		Version:       1,
+		MediaFileName: mediaFileName,
+		CutSegments:   make([]CutSegment, len(markers)),
+	}
+
+	for i, marker := range markers {
+		project.CutSegments[i] = CutSegment{
+			Start: marker.StartTime,
+			End:   marker.EndTime,
+			Name:  marker.Label,
+		}
+	}
+
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	// Write header
-	err = writer.Write([]string{"start_time", "end_time", "label"})
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	err = encoder.Encode(project)
 	if err != nil {
 		return err
 	}
 
-	// Write markers
-	for _, marker := range markers {
-		record := []string{
-			formatTime(marker.StartTime),
-			formatTime(marker.EndTime),
-			marker.Label,
-		}
-		err = writer.Write(record)
-		if err != nil {
-			return err
-		}
-	}
-
 	return nil
-}
-
-func formatTime(seconds float64) string {
-	return strconv.FormatFloat(seconds, 'f', 2, 64)
 }
