@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/go-audio/wav"
@@ -93,13 +94,16 @@ func main() {
 		log.Fatalf("Failed to analyze audio: %v", err)
 	}
 
+	cleanedUpMarkers := mergeOverlappingMarkers(markers)
+
 	// Export markers to LosslessCut JSON format
-	err = exportToLosslessCut(markers, *outputFile, filepath.Base(*inputFile))
+	err = exportToLosslessCut(cleanedUpMarkers, *outputFile, filepath.Base(*inputFile))
 	if err != nil {
 		log.Fatalf("Failed to export markers: %v", err)
 	}
 
 	fmt.Printf("Found %d excitement markers\n", len(markers))
+	fmt.Printf("Cleaned up %d excitement markers\n", len(cleanedUpMarkers))
 	fmt.Printf("Markers exported to: %s\n", *outputFile)
 	fmt.Println("Import this file into LosslessCut: File → Open → Select the .proj.llc file")
 }
@@ -328,4 +332,20 @@ func exportToLosslessCut(markers []ExcitementMarker, filename string, mediaFileN
 	}
 
 	return nil
+}
+
+func mergeOverlappingMarkers(markers []ExcitementMarker) []ExcitementMarker {
+	sort.Slice(markers, func(i, j int) bool {
+		return markers[i].StartTime < markers[j].StartTime
+	})
+
+	mergedMarkers := []ExcitementMarker{}
+	for _, marker := range markers {
+		if len(mergedMarkers) == 0 || mergedMarkers[len(mergedMarkers)-1].EndTime < marker.StartTime {
+			mergedMarkers = append(mergedMarkers, marker)
+		} else {
+			mergedMarkers[len(mergedMarkers)-1].EndTime = math.Max(mergedMarkers[len(mergedMarkers)-1].EndTime, marker.EndTime)
+		}
+	}
+	return mergedMarkers
 }
