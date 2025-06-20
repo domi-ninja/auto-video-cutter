@@ -45,7 +45,7 @@ type AudioAnalyzer struct {
 func main() {
 	var (
 		inputFile   = flag.String("input", "", "Input video file path")
-		outputFile  = flag.String("output", "", "Output LosslessCut project file path (default: input_name.proj.llc)")
+		outputFile  = flag.String("output", "", "Output LosslessCut project file path (default: input_name-proj.llc)")
 		threshold   = flag.Float64("threshold", 2.0, "Volume spike threshold multiplier")
 		minDuration = flag.Float64("min-duration", 1.0, "Minimum excitement duration in seconds")
 		windowMs    = flag.Int("window", 1000, "Analysis window size in milliseconds")
@@ -62,7 +62,7 @@ func main() {
 	if *outputFile == "" {
 		ext := filepath.Ext(*inputFile)
 		base := strings.TrimSuffix(filepath.Base(*inputFile), ext)
-		*outputFile = base + ".proj.llc"
+		*outputFile = base + "-proj.llc"
 	}
 
 	if *verbose {
@@ -105,7 +105,7 @@ func main() {
 	fmt.Printf("Found %d excitement markers\n", len(markers))
 	fmt.Printf("Cleaned up %d excitement markers\n", len(cleanedUpMarkers))
 	fmt.Printf("Markers exported to: %s\n", *outputFile)
-	fmt.Println("Import this file into LosslessCut: File → Open → Select the .proj.llc file")
+	fmt.Println("Import this file into LosslessCut: File → Open → Select the -proj.llc file")
 }
 
 func extractAudio(videoFile string) (string, error) {

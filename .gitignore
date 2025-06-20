@@ -26,7 +26,7 @@ temp_audio.wav
 Thumbs.db
 
 # LosslessCut project files (optional - remove if you want to track them)
-*.proj.llc
+*-proj.llc
 
 # Video files
 *.mp4

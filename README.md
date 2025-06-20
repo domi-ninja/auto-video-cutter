@@ -28,7 +28,7 @@ Basic usage:
 This will:
 1. Extract audio from your video file
 2. Analyze volume patterns to detect excitement compared to average
-3. Generate a LosslessCut project file (e.g., `FILENAME.proj.llc`) with cut segments
+3. Generate a LosslessCut project file (e.g., `FILENAME-proj.llc`) with cut segments
 
 ### Options
 
@@ -38,7 +38,7 @@ This will:
 
 **Options:**
 - `-input` - Input video file path (required)
-- `-output` - Output LosslessCut project file path (default: input_name.proj.llc)
+- `-output` - Output LosslessCut project file path (default: input_name-proj.llc)
 - `-threshold` - Volume spike threshold multiplier (default: 2.0)
 - `-min-duration` - Minimum excitement duration in seconds (default: 1.0)
 - `-window` - Analysis window size in milliseconds (default: 1000)
