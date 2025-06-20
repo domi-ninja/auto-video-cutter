@@ -1,6 +1,6 @@
-# Video Cutter
+# Vibe coded: Auto Video Cutter 
 
-A command-line tool that analyzes gameplay videos to automatically detect excitement moments based on audio volume spikes. Perfect for streamers and content creators who want to quickly find highlight moments for editing.
+A command-line tool that uses a crude heuristic to attempt to automatically detect excitement moments in a video, solely based on audio volume spikes. I'm trying to quickly find highlight moments without doing anything.
 
 ## Features
 
@@ -12,10 +12,6 @@ A command-line tool that analyzes gameplay videos to automatically detect excite
 ## Prerequisites
 
 1. **FFmpeg** - Must be installed and available in your PATH
-   - Windows: Download from https://ffmpeg.org/download.html
-   - macOS: `brew install ffmpeg`
-   - Linux: `sudo apt install ffmpeg` or equivalent
-
 2. **Go 1.21+** - Required to build the application
 
 ## Usage
