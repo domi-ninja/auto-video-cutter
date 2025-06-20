@@ -49,6 +49,7 @@ func main() {
 		threshold   = flag.Float64("threshold", 2.0, "Volume spike threshold multiplier")
 		minDuration = flag.Float64("min-duration", 1.0, "Minimum excitement duration in seconds")
 		windowMs    = flag.Int("window", 1000, "Analysis window size in milliseconds")
+		mergeGap    = flag.Float64("merge-gap", 5.0, "Maximum gap between segments to merge them (seconds)")
 		verbose     = flag.Bool("verbose", false, "Enable verbose logging")
 	)
 	flag.Parse()
@@ -94,7 +95,7 @@ func main() {
 		log.Fatalf("Failed to analyze audio: %v", err)
 	}
 
-	cleanedUpMarkers := mergeOverlappingMarkers(markers)
+	cleanedUpMarkers := mergeOverlappingMarkers(markers, *mergeGap)
 
 	// Export markers to LosslessCut JSON format
 	err = exportToLosslessCut(cleanedUpMarkers, *outputFile, filepath.Base(*inputFile))
@@ -334,17 +335,30 @@ func exportToLosslessCut(markers []ExcitementMarker, filename string, mediaFileN
 	return nil
 }
 
-func mergeOverlappingMarkers(markers []ExcitementMarker) []ExcitementMarker {
+func mergeOverlappingMarkers(markers []ExcitementMarker, mergeGap float64) []ExcitementMarker {
 	sort.Slice(markers, func(i, j int) bool {
 		return markers[i].StartTime < markers[j].StartTime
 	})
 
 	mergedMarkers := []ExcitementMarker{}
 	for _, marker := range markers {
-		if len(mergedMarkers) == 0 || mergedMarkers[len(mergedMarkers)-1].EndTime < marker.StartTime {
+		if len(mergedMarkers) == 0 {
 			mergedMarkers = append(mergedMarkers, marker)
 		} else {
-			mergedMarkers[len(mergedMarkers)-1].EndTime = math.Max(mergedMarkers[len(mergedMarkers)-1].EndTime, marker.EndTime)
+			lastMarker := &mergedMarkers[len(mergedMarkers)-1]
+			gap := marker.StartTime - lastMarker.EndTime
+
+			// Merge if overlapping or if gap is smaller than mergeGap threshold
+			if gap <= mergeGap {
+				// Extend the end time and update the label with combined score
+				lastMarker.EndTime = math.Max(lastMarker.EndTime, marker.EndTime)
+				// Update label to reflect combined segment
+				avgScore := (lastMarker.Score + marker.Score) / 2
+				lastMarker.Score = avgScore
+				lastMarker.Label = fmt.Sprintf("Excitement (%.1fx)", avgScore)
+			} else {
+				mergedMarkers = append(mergedMarkers, marker)
+			}
 		}
 	}
 	return mergedMarkers
