@@ -1,3 +1,7 @@
+<!-- moved-to-codeberg -->
+> This repository moved to [Codeberg](https://codeberg.org/domi-ninja/auto-video-cutter).
+>
+> I moved off GitHub because it became unreliable after the Microsoft acquisition.
 # Vibe coded: Auto Video Cutter 
 
 A command-line tool that uses a crude heuristic to attempt to automatically detect excitement moments in a video, solely based on audio volume spikes. I'm trying to quickly find highlight moments without doing anything.
